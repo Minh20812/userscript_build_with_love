@@ -7,6 +7,8 @@
 // @match        *://*.threads.net/*
 // @match        *://*.threads.com/*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/Minh20812/userscript_build_with_love/main/threads_reader.user.js
+// @downloadURL  https://raw.githubusercontent.com/Minh20812/userscript_build_with_love/main/threads_reader.user.js
 // ==/UserScript==
 
 (function () {
