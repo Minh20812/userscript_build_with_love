@@ -6,7 +6,8 @@
 // @author       Bạn
 // @match        *://*.threads.net/*
 // @match        *://*.threads.com/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      translate.googleapis.com
 // @updateURL    https://raw.githubusercontent.com/Minh20812/userscript_build_with_love/main/threads_reader.user.js
 // @downloadURL  https://raw.githubusercontent.com/Minh20812/userscript_build_with_love/main/threads_reader.user.js
 // ==/UserScript==
@@ -25,6 +26,10 @@
   let seenTexts = new Set();
   let scrollCooldown = false;
   let uiCreated = false;
+
+  // --- Translation ---
+  const translationCache = new Map(); // text -> translatedText
+  const pendingTranslations = new Map(); // text -> Promise
 
   // Config mặc định
   let opts = {
@@ -101,6 +106,7 @@
             }
             .__reader_btn:hover { opacity: 0.8; }
             .__reader_btn.stop { background: #ff3333; color: white; }
+            .__reader_btn.next { background: #0070f3; color: white; }
             .__reader_status { font-size: 11px; color: #888; text-align: center; margin-top: 4px; }
             .__reader_select { 
                 background: #202020; color: #e0e0e0; border: 1px solid #444; 
@@ -131,6 +137,10 @@
     btnStop.className = "__reader_btn stop";
     btnStop.innerText = "⏹ Dừng";
 
+    const btnNext = document.createElement("button");
+    btnNext.className = "__reader_btn next";
+    btnNext.innerText = "⏭ Bài Tiếp Theo";
+
     const status = document.createElement("div");
     status.className = "__reader_status";
     status.innerText = "Trạng thái: Chờ";
@@ -156,6 +166,14 @@
       stopReading();
       btnToggle.innerText = "▶ Bắt Đầu Đọc";
       status.innerText = "Trạng thái: Đã dừng";
+    };
+
+    btnNext.onclick = () => {
+      if (currentStatus === "reading" || currentStatus === "paused") {
+        skipToNext();
+        btnToggle.innerText = "⏸ Tạm Dừng";
+        status.innerText = "Đang đọc...";
+      }
     };
 
     const selectWrap = document.createElement("div");
@@ -214,6 +232,7 @@
 
     panel.appendChild(selectWrap);
     panel.appendChild(btnToggle);
+    panel.appendChild(btnNext);
     panel.appendChild(btnStop);
     panel.appendChild(status);
     document.body.appendChild(panel);
@@ -235,6 +254,79 @@
       }
     };
     document.body.appendChild(toggleBtn);
+  }
+
+  // --- Language & Translation ---
+  function isVietnamese(text) {
+    // Ký tự dấu đặc trưng của tiếng Việt (dấu nặng, huyền, sắc, hỏi, ngã + tổ hợp ă, â, ê, ô, ơ, ư, đ)
+    const viPattern = /[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđĐÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴ]/;
+    const words = text.split(/\s+/).filter(w => w.length > 1);
+    if (words.length === 0) return true;
+    // Đếm số từ có ký tự Việt
+    const viWords = words.filter(w => viPattern.test(w)).length;
+    // Coi là tiếng Việt nếu >20% từ có dấu Việt, hoặc text quá ngắn để phán đoán
+    return (viWords / words.length) > 0.2 || words.length <= 3;
+  }
+
+  function translateGTX(text) {
+    if (translationCache.has(text)) {
+      return Promise.resolve(translationCache.get(text));
+    }
+    if (pendingTranslations.has(text)) {
+      return pendingTranslations.get(text);
+    }
+
+    const url =
+      "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=vi&dt=t&q=" +
+      encodeURIComponent(text);
+
+    const promise = new Promise((resolve) => {
+      GM_xmlhttpRequest({
+        method: "GET",
+        url: url,
+        onload: (res) => {
+          try {
+            const data = JSON.parse(res.responseText);
+            // Ghép tất cả mảnh dịch lại
+            const translated = data[0]
+              .map((chunk) => chunk[0] || "")
+              .join(" ")
+              .trim();
+            translationCache.set(text, translated);
+            pendingTranslations.delete(text);
+            console.log("[Threads Reader] Đã dịch:", text.slice(0, 40), "→", translated.slice(0, 40));
+            resolve(translated);
+          } catch (e) {
+            console.warn("[Threads Reader] Lỗi parse dịch:", e);
+            translationCache.set(text, text);
+            pendingTranslations.delete(text);
+            resolve(text); // fallback: đọc nguyên bản
+          }
+        },
+        onerror: () => {
+          console.warn("[Threads Reader] Lỗi kết nối dịch, đọc nguyên bản.");
+          translationCache.set(text, text);
+          pendingTranslations.delete(text);
+          resolve(text);
+        },
+      });
+    });
+
+    pendingTranslations.set(text, promise);
+    return promise;
+  }
+
+  // Dịch trước bài kế tiếp để không phải chờ
+  function prefetchNext(nextIndex) {
+    const seg = utteranceQueue[nextIndex];
+    if (!seg) return;
+    const cleanText = seg.text
+      .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, "")
+      .trim();
+    if (cleanText && !isVietnamese(cleanText) && !translationCache.has(cleanText) && !pendingTranslations.has(cleanText)) {
+      console.log("[Threads Reader] Prefetch dịch bài", nextIndex, ":", cleanText.slice(0, 40));
+      translateGTX(cleanText); // fire-and-forget, lưu vào cache
+    }
   }
 
   // --- Threads Element Detection ---
@@ -312,12 +404,12 @@
     }, 500);
   }
 
-  function speakCurrent() {
+  async function speakCurrent() {
     if (isSpeaking) return;
     isSpeaking = true;
 
     try {
-      if (isPaused || currentStatus === "stopped") return;
+      if (isPaused || currentStatus === "stopped") { isSpeaking = false; return; }
 
       if (currentIndex >= utteranceQueue.length) {
         const more = scanNewSegments();
@@ -332,6 +424,7 @@
         } else {
           stopReading();
           document.querySelector(".__reader_status").innerText = "Đã đọc hết";
+          isSpeaking = false;
           return;
         }
       }
@@ -349,6 +442,23 @@
         setTimeout(speakCurrent, 50);
         return;
       }
+
+      // --- Auto-translate nếu không phải tiếng Việt ---
+      if (!isVietnamese(textToSpeak)) {
+        const statusEl = document.querySelector(".__reader_status");
+        // Nếu đã có trong cache thì lấy ngay (prefetch đã chạy trước), nếu không thì chờ dịch
+        if (!translationCache.has(textToSpeak)) {
+          if (statusEl) statusEl.innerText = "Đang dịch...";
+        }
+        textToSpeak = await translateGTX(textToSpeak);
+        if (statusEl && currentStatus === "reading") statusEl.innerText = "Đang đọc...";
+      }
+
+      // Kiểm tra lại sau khi await (người dùng có thể đã dừng)
+      if (isPaused || currentStatus === "stopped") { isSpeaking = false; return; }
+
+      // --- Prefetch bài tiếp theo trong background ---
+      prefetchNext(currentIndex + 1);
 
       const utterance = new SpeechSynthesisUtterance(textToSpeak);
       utterance.lang = opts.lang;
@@ -387,10 +497,9 @@
       };
 
       window.speechSynthesis.speak(utterance);
-    } finally {
-      if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending) {
-        isSpeaking = false;
-      }
+    } catch (e) {
+      console.error("[Threads Reader] Lỗi speakCurrent:", e);
+      isSpeaking = false;
     }
   }
 
@@ -471,6 +580,22 @@
         if (currentStatus === "reading" && !window.speechSynthesis.speaking)
           speakCurrent();
       }, 300);
+    }
+  }
+
+  function skipToNext() {
+    window.speechSynthesis.cancel();
+    isSpeaking = false;
+    isPaused = false;
+    currentStatus = "reading";
+    currentIndex++;
+    // Nếu còn segment trong queue thì đọc tiếp, nếu không thì load thêm
+    if (currentIndex < utteranceQueue.length) {
+      setTimeout(speakCurrent, 100);
+    } else {
+      tryLoadMore(() => {
+        if (currentStatus === "reading") speakCurrent();
+      });
     }
   }
 
