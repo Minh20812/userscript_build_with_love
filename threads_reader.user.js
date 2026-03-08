@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Threads Reader - Đọc Bài Tự Động
 // @namespace    http://tampermonkey.net/
-// @version      0.1
+// @version      0.2
 // @description  Tự động đọc các bài viết trên Threads (threads.com) sử dụng Web Speech API. Kế thừa từ extension đọc FB.
 // @author       Bạn
 // @match        *://*.threads.net/*
